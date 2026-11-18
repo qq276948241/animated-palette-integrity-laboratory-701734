@@ -22,3 +22,73 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 IN THE SOFTWARE.
+
+
+Error contract
+-------------
+
+All malformed input and bad arguments are reported by throwing a GifError.
+GifError extends the built-in Error (so `instanceof Error` and existing
+try/catch blocks keep working) and adds two properties:
+
+  .name    always "GifError"
+  .stage   short identifier for the parse/encode stage that failed
+  .offset  byte offset inside the buffer where the problem was detected,
+           or null for pure argument validation that has no buffer position
+
+Decoder stages (thrown by GifReader, including decodeAndBlitFrameRGBA /
+decodeAndBlitFrameBGRA):
+
+  header, logical-screen, global-color-table, block,
+  application-extension, graphics-control-extension, comment-extension,
+  image-descriptor, local-color-table, image-data, lzw-min-code-size,
+  lzw-subblock, lzw-data, lzw-code, lzw-output, trailer, frame-rect,
+  palette-index, output-buffer
+
+The reader never treats missing bytes as zero: every read is bounds-checked,
+so a truncated file fails with the stage and offset of the first unreadable
+byte instead of silently decoding garbage.  Frames must lie inside the
+logical canvas, transparent and pixel indices must resolve in the frame's
+color table, and LZW streams are rejected for early termination, illegal
+dictionary references, and pixel underflow/overflow.  A destination pixel
+buffer that is too short raises an output-buffer error before any pixel is
+written, leaving its existing contents untouched.
+
+Writer stages (thrown by GifWriter):
+
+  writer-arguments  non-integer or out-of-range dimensions, coordinates,
+                    delay, disposal, transparent/palette indices, palette
+                    colors, or a frame rectangle outside the canvas.  These
+                    carry a null offset and change no encoder state.
+  writer-buffer     the fixed output buffer ran out of space; .offset is the
+                    position that could not be written.
+
+A failed addFrame is atomic: it restores the output position, the bytes that
+existed before the call and the ended flag, then rethrows.  After catching a
+writer-buffer error you can swap in a larger buffer with setOutputBuffer()
+(or use setOutputBufferPosition()) and continue adding legal frames to the
+same encoder.  A failed frame added after end() never removes the trailer.
+
+The original CommonJS exports are unchanged, with GifError added alongside:
+
+  exports.GifWriter, exports.GifReader, exports.GifError
+
+Plain Arrays, Uint8Arrays and Node Buffers all remain supported as output
+buffers.
+
+
+Running the tests
+-----------------
+
+The regression suite has no third-party dependencies:
+
+  node test/regression.js
+
+It exits with status 0 only when every test passes; otherwise it prints each
+failed test by name with its stage/offset error and exits non-zero.  The
+suite builds its GIF fixtures with its own LZW encoder and byte builder
+(separate code from omggif.js), checks decoded pixels against hand-written
+expectations, sweeps every byte-length truncation of each valid sample,
+exercises exact-capacity and one-byte-short buffers, and verifies recovery
+after failed and post-end frames.
+
